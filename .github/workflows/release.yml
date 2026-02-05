@@ -1,0 +1,114 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and Upload Release Assets
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: 386
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: arm
+          # Windows builds
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: 386
+          - goos: windows
+            goarch: arm64
+          # macOS builds
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          # Other platforms
+          - goos: openbsd
+            goarch: amd64
+          - goos: solaris
+            goarch: amd64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Verify Go modules
+        working-directory: ./src
+        run: go mod tidy
+
+      - name: Get release version
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build binary
+        working-directory: ./src
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY_NAME="tfdown-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          go build -ldflags "-s -w -X main.version=${{ steps.get_version.outputs.VERSION }}" -o "../${BINARY_NAME}" .
+          echo "BINARY_NAME=${BINARY_NAME}" >> $GITHUB_ENV
+
+      - name: Create archive
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip "tfdown-${{ matrix.goos }}-${{ matrix.goarch }}.zip" "${BINARY_NAME}"
+            echo "ASSET_NAME=tfdown-${{ matrix.goos }}-${{ matrix.goarch }}.zip" >> $GITHUB_ENV
+          else
+            tar czf "tfdown-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" "${BINARY_NAME}"
+            echo "ASSET_NAME=tfdown-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ${{ env.ASSET_NAME }}
+
+  checksums:
+    name: Generate Checksums
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all release assets
+        uses: robinraju/release-downloader@v1.9
+        with:
+          tag: ${{ github.ref_name }}
+          fileName: '*'
+          out-file-path: 'downloads'
+
+      - name: Generate checksums
+        run: |
+          cd downloads
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload checksums
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ./downloads/SHA256SUMS
