@@ -17,6 +17,9 @@ import (
 const (
 	terraformCheckURL    = "https://checkpoint-api.hashicorp.com/v1/check/terraform"
 	terraformDownloadURL = "https://releases.hashicorp.com/terraform/%s/terraform_%s_%s_%s.zip"
+
+	terraformLSCheckURL    = "https://checkpoint-api.hashicorp.com/v1/check/terraform-ls"
+	terraformLSDownloadURL = "https://releases.hashicorp.com/terraform-ls/%s/terraform-ls_%s_%s_%s.zip"
 )
 
 // TerraformCheck represents the response from HashiCorp's checkpoint API
@@ -30,17 +33,18 @@ type TerraformCheck struct {
 	Alerts             []interface{} `json:"alerts"`
 }
 
-// Downloader handles downloading Terraform
+// Downloader handles downloading Terraform and terraform-ls
 type Downloader struct {
-	targetOS   string
-	targetArch string
-	targetVer  string
-	quiet      bool
-	httpClient *http.Client
+	targetOS    string
+	targetArch  string
+	targetVer   string
+	targetLSVer string
+	quiet       bool
+	httpClient  *http.Client
 }
 
 // NewDownloader creates a new Downloader
-func NewDownloader(targetOS, targetArch, targetVer string, quiet bool) *Downloader {
+func NewDownloader(targetOS, targetArch, targetVer, targetLSVer string, quiet bool) *Downloader {
 	if targetOS == "" {
 		targetOS = runtime.GOOS
 	}
@@ -73,17 +77,18 @@ func NewDownloader(targetOS, targetArch, targetVer string, quiet bool) *Download
 	}
 
 	return &Downloader{
-		targetOS:   targetOS,
-		targetArch: targetArch,
-		targetVer:  targetVer,
-		quiet:      quiet,
-		httpClient: client,
+		targetOS:    targetOS,
+		targetArch:  targetArch,
+		targetVer:   targetVer,
+		targetLSVer: targetLSVer,
+		quiet:       quiet,
+		httpClient:  client,
 	}
 }
 
-// GetLatestVersion fetches the latest version of Terraform
-func (d *Downloader) GetLatestVersion() (string, error) {
-	resp, err := d.httpClient.Get(terraformCheckURL)
+// getLatestVersion fetches the latest version of a HashiCorp product from the checkpoint API
+func (d *Downloader) getLatestVersion(checkURL string) (string, error) {
+	resp, err := d.httpClient.Get(checkURL)
 	if err != nil {
 		return "", fmt.Errorf("error fetching latest version: %w", err)
 	}
@@ -105,29 +110,23 @@ func (d *Downloader) GetLatestVersion() (string, error) {
 	return check.CurrentVersion, nil
 }
 
-// Download downloads the specified version of Terraform
-func (d *Downloader) Download() (string, error) {
-	ver := d.targetVer
-	if ver == "" {
-		latest, err := d.GetLatestVersion()
-		if err != nil {
-			return "", err
-		}
-		ver = latest
-	}
+// GetLatestVersion fetches the latest version of Terraform
+func (d *Downloader) GetLatestVersion() (string, error) {
+	return d.getLatestVersion(terraformCheckURL)
+}
 
-	// Remove 'v' prefix if present
+// downloadFile downloads a product zip from releases.hashicorp.com
+func (d *Downloader) downloadFile(productName, ver, downloadURLFmt string) (string, error) {
 	ver = strings.TrimPrefix(ver, "v")
 
-	downloadURL := fmt.Sprintf(terraformDownloadURL, ver, ver, d.targetOS, d.targetArch)
-	zipFile := fmt.Sprintf("terraform_%s_%s_%s.zip", ver, d.targetOS, d.targetArch)
+	downloadURL := fmt.Sprintf(downloadURLFmt, ver, ver, d.targetOS, d.targetArch)
+	zipFile := fmt.Sprintf("%s_%s_%s_%s.zip", productName, ver, d.targetOS, d.targetArch)
 
-	fmt.Printf("Downloading Terraform %s for %s/%s...\n", ver, d.targetOS, d.targetArch)
+	fmt.Printf("Downloading %s %s for %s/%s...\n", productName, ver, d.targetOS, d.targetArch)
 	if !d.quiet {
 		fmt.Printf("URL: %s\n", downloadURL)
 	}
 
-	// Download the file
 	resp, err := d.httpClient.Get(downloadURL)
 	if err != nil {
 		return "", fmt.Errorf("error downloading: %w", err)
@@ -138,29 +137,24 @@ func (d *Downloader) Download() (string, error) {
 		return "", fmt.Errorf("error downloading: status %d", resp.StatusCode)
 	}
 
-	// Create the zip file
 	out, err := os.Create(zipFile)
 	if err != nil {
 		return "", fmt.Errorf("error creating file: %w", err)
 	}
 	defer out.Close()
 
-	// Get total size for progress bar
 	totalSize := resp.ContentLength
 
-	// Write the body to file with progress bar
 	if d.quiet || totalSize <= 0 {
-		// No progress bar in quiet mode or if size is unknown
 		_, err = io.Copy(out, resp.Body)
 	} else {
-		// Use progress bar
 		progress := &ProgressReader{
-			Reader:    resp.Body,
-			Total:     totalSize,
+			Reader:     resp.Body,
+			Total:      totalSize,
 			onProgress: d.printProgress,
 		}
 		_, err = io.Copy(out, progress)
-		fmt.Println() // New line after progress bar
+		fmt.Println()
 	}
 
 	if err != nil {
@@ -169,6 +163,32 @@ func (d *Downloader) Download() (string, error) {
 
 	fmt.Printf("Downloaded to: %s\n", zipFile)
 	return zipFile, nil
+}
+
+// Download downloads the specified version of Terraform
+func (d *Downloader) Download() (string, error) {
+	ver := d.targetVer
+	if ver == "" {
+		latest, err := d.GetLatestVersion()
+		if err != nil {
+			return "", err
+		}
+		ver = latest
+	}
+	return d.downloadFile("terraform", ver, terraformDownloadURL)
+}
+
+// DownloadLS downloads the specified version of terraform-ls
+func (d *Downloader) DownloadLS() (string, error) {
+	ver := d.targetLSVer
+	if ver == "" {
+		latest, err := d.getLatestVersion(terraformLSCheckURL)
+		if err != nil {
+			return "", err
+		}
+		ver = latest
+	}
+	return d.downloadFile("terraform-ls", ver, terraformLSDownloadURL)
 }
 
 // printProgress prints a progress bar
@@ -251,6 +271,14 @@ func (d *Downloader) GetVersion() (string, error) {
 		return strings.TrimPrefix(d.targetVer, "v"), nil
 	}
 	return d.GetLatestVersion()
+}
+
+// GetLSVersion returns the target terraform-ls version (or latest if not specified)
+func (d *Downloader) GetLSVersion() (string, error) {
+	if d.targetLSVer != "" {
+		return strings.TrimPrefix(d.targetLSVer, "v"), nil
+	}
+	return d.getLatestVersion(terraformLSCheckURL)
 }
 
 // ProgressReader wraps an io.Reader to track download progress

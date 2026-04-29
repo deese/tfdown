@@ -12,6 +12,7 @@ import (
 // Config holds the configuration for tfdown
 type Config struct {
 	Version     string
+	LSVersion   string
 	Install     bool
 	InstallPath string
 	configPath  string
@@ -27,6 +28,7 @@ func NewConfig() *Config {
 	configPath := filepath.Join(homeDir, ".tfdown.conf")
 	return &Config{
 		Version:     "",
+		LSVersion:   "",
 		Install:     false,
 		InstallPath: "",
 		configPath:  configPath,
@@ -63,6 +65,8 @@ func (c *Config) Load() error {
 		switch key {
 		case "version":
 			c.Version = value
+		case "ls_version":
+			c.LSVersion = value
 		case "install":
 			c.Install, _ = strconv.ParseBool(value)
 		case "install_path":
@@ -82,6 +86,7 @@ func (c *Config) Save() error {
 	content := fmt.Sprintf("# tfdown configuration file\n")
 	content += fmt.Sprintf("# Last updated: %s\n\n", getCurrentDate())
 	content += fmt.Sprintf("version=%s\n", c.Version)
+	content += fmt.Sprintf("ls_version=%s\n", c.LSVersion)
 	content += fmt.Sprintf("install=%t\n", c.Install)
 	content += fmt.Sprintf("install_path=%s\n", c.InstallPath)
 
@@ -94,9 +99,12 @@ func (c *Config) Save() error {
 }
 
 // Update updates the configuration with new values and saves it
-func (c *Config) Update(version string, install bool, installPath string) error {
+func (c *Config) Update(version, lsVersion string, install bool, installPath string) error {
 	if version != "" {
 		c.Version = version
+	}
+	if lsVersion != "" {
+		c.LSVersion = lsVersion
 	}
 	c.Install = install
 	c.InstallPath = installPath

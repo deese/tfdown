@@ -2,6 +2,8 @@
 
 **tfdown** is a cross-platform tool written in Go that automatically downloads the latest version of Terraform available for your operating system and architecture.
 
+This has been developed with the help of Claude.  
+
 ## Features
 
 - ✨ **Automatic download** of the latest stable Terraform version
@@ -185,4 +187,4 @@ Contributions are welcome! Please open an issue or pull request.
 
 ## Author
 
-Your name
+deese + claude 
