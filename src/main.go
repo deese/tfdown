@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const version = "1.1.0"
+const version = "1.2.0"
 
 // toolRequest describes a tool to download in this run.
 type toolRequest struct {
