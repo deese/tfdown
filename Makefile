@@ -3,8 +3,15 @@
 # Variables
 BINARY_NAME=tfdown
 MAIN_PACKAGE=./src
-VERSION?=1.0.0
+VERSION?=1.1.0
 BUILD_DIR=dist
+
+# Detect Windows to append .exe
+ifeq ($(OS),Windows_NT)
+    EXT=.exe
+else
+    EXT=
+endif
 
 # Go parameters
 GOCMD=go
@@ -50,8 +57,8 @@ test:
 .PHONY: build
 build: deps
 	@echo "Building for current platform..."
-	cd $(MAIN_PACKAGE) && $(GOBUILD) $(LDFLAGS) -o ../$(BINARY_NAME) .
-	@echo "Build complete: $(BINARY_NAME)"
+	cd $(MAIN_PACKAGE) && $(GOBUILD) $(LDFLAGS) -o ../$(BINARY_NAME)$(EXT) .
+	@echo "Build complete: $(BINARY_NAME)$(EXT)"
 
 # Build for all platforms
 .PHONY: build-all
@@ -101,7 +108,7 @@ clean:
 # Run the application
 .PHONY: run
 run: build
-	./$(BINARY_NAME)
+	./$(BINARY_NAME)$(EXT)
 
 # Install to GOPATH/bin
 .PHONY: install

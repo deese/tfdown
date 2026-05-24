@@ -7,43 +7,40 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
-// Config holds the configuration for tfdown
+// Config holds the persistent configuration for tfdown.
 type Config struct {
-	Version     string
-	LSVersion   string
+	Versions    map[string]string // tool name -> last downloaded version
 	Install     bool
 	InstallPath string
 	configPath  string
 }
 
-// NewConfig creates a new Config instance with default values
+// NewConfig returns a Config with default values.
 func NewConfig() *Config {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		homeDir = "."
 	}
 
-	configPath := filepath.Join(homeDir, ".tfdown.conf")
 	return &Config{
-		Version:     "",
-		LSVersion:   "",
-		Install:     false,
-		InstallPath: "",
-		configPath:  configPath,
+		Versions:   make(map[string]string),
+		configPath: filepath.Join(homeDir, ".tfdown.conf"),
 	}
 }
 
-// Load reads the configuration from the config file
+// Load reads configuration from ~/.tfdown.conf.
+// Accepts both the new format (version.TOOL=x.y.z) and the legacy format
+// (version=x.y.z / ls_version=x.y.z) for backward compatibility.
 func (c *Config) Load() error {
 	file, err := os.Open(c.configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			// File doesn't exist, return default config
 			return nil
 		}
-		return fmt.Errorf("error opening config file: %w", err)
+		return fmt.Errorf("opening config file: %w", err)
 	}
 	defer file.Close()
 
@@ -62,55 +59,48 @@ func (c *Config) Load() error {
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
 
-		switch key {
-		case "version":
-			c.Version = value
-		case "ls_version":
-			c.LSVersion = value
-		case "install":
+		switch {
+		case strings.HasPrefix(key, "version."):
+			// New format: version.terraform=1.7.0
+			c.Versions[strings.TrimPrefix(key, "version.")] = value
+		case key == "version":
+			// Legacy: terraform
+			c.Versions["terraform"] = value
+		case key == "ls_version":
+			// Legacy: terraform-ls
+			c.Versions["terraform-ls"] = value
+		case key == "install":
 			c.Install, _ = strconv.ParseBool(value)
-		case "install_path":
+		case key == "install_path":
 			c.InstallPath = value
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading config file: %w", err)
-	}
-
-	return nil
+	return scanner.Err()
 }
 
-// Save writes the configuration to the config file
+// Save writes the current configuration to ~/.tfdown.conf.
 func (c *Config) Save() error {
-	content := fmt.Sprintf("# tfdown configuration file\n")
-	content += fmt.Sprintf("# Last updated: %s\n\n", getCurrentDate())
-	content += fmt.Sprintf("version=%s\n", c.Version)
-	content += fmt.Sprintf("ls_version=%s\n", c.LSVersion)
-	content += fmt.Sprintf("install=%t\n", c.Install)
-	content += fmt.Sprintf("install_path=%s\n", c.InstallPath)
+	var sb strings.Builder
+	sb.WriteString("# tfdown configuration file\n")
+	fmt.Fprintf(&sb, "# Last updated: %s\n\n", time.Now().Format("2006-01-02"))
 
-	err := os.WriteFile(c.configPath, []byte(content), 0644)
-	if err != nil {
-		return fmt.Errorf("error writing config file: %w", err)
+	for toolName, ver := range c.Versions {
+		fmt.Fprintf(&sb, "version.%s=%s\n", toolName, ver)
 	}
 
-	return nil
+	fmt.Fprintf(&sb, "install=%t\n", c.Install)
+	fmt.Fprintf(&sb, "install_path=%s\n", c.InstallPath)
+
+	return os.WriteFile(c.configPath, []byte(sb.String()), 0644)
 }
 
-// Update updates the configuration with new values and saves it
-func (c *Config) Update(version, lsVersion string, install bool, installPath string) error {
-	if version != "" {
-		c.Version = version
-	}
-	if lsVersion != "" {
-		c.LSVersion = lsVersion
-	}
-	c.Install = install
-	c.InstallPath = installPath
-	return c.Save()
+// SetVersion stores the downloaded version for a tool.
+func (c *Config) SetVersion(toolName, ver string) {
+	c.Versions[toolName] = ver
 }
 
-func getCurrentDate() string {
-	return "2026-02-05" // Placeholder, in real implementation use time.Now()
+// GetVersion returns the stored version for a tool, or empty string if unknown.
+func (c *Config) GetVersion(toolName string) string {
+	return c.Versions[toolName]
 }

@@ -14,62 +14,42 @@ import (
 	"time"
 )
 
-const (
-	terraformCheckURL    = "https://checkpoint-api.hashicorp.com/v1/check/terraform"
-	terraformDownloadURL = "https://releases.hashicorp.com/terraform/%s/terraform_%s_%s_%s.zip"
-
-	terraformLSCheckURL    = "https://checkpoint-api.hashicorp.com/v1/check/terraform-ls"
-	terraformLSDownloadURL = "https://releases.hashicorp.com/terraform-ls/%s/terraform-ls_%s_%s_%s.zip"
-)
-
-// TerraformCheck represents the response from HashiCorp's checkpoint API
-type TerraformCheck struct {
-	Product            string `json:"product"`
-	CurrentVersion     string `json:"current_version"`
-	CurrentRelease     int64  `json:"current_release"`
-	CurrentDownloadURL string `json:"current_download_url"`
-	CurrentChangelogURL string `json:"current_changelog_url"`
-	ProjectWebsite     string `json:"project_website"`
-	Alerts             []interface{} `json:"alerts"`
+// hashicorpCheckResponse holds the fields we care about from the checkpoint API.
+type hashicorpCheckResponse struct {
+	Product        string `json:"product"`
+	CurrentVersion string `json:"current_version"`
 }
 
-// Downloader handles downloading Terraform and terraform-ls
+// Downloader manages downloading HashiCorp tools.
 type Downloader struct {
-	targetOS    string
-	targetArch  string
-	targetVer   string
-	targetLSVer string
-	quiet       bool
-	httpClient  *http.Client
+	targetOS   string
+	targetArch string
+	versions   map[string]string // tool name -> requested version (empty = latest)
+	quiet      bool
+	httpClient *http.Client
 }
 
-// NewDownloader creates a new Downloader
-func NewDownloader(targetOS, targetArch, targetVer, targetLSVer string, quiet bool) *Downloader {
+// NewDownloader creates a Downloader.
+// versions maps tool names to pinned versions; missing or empty entries resolve to latest.
+func NewDownloader(targetOS, targetArch string, versions map[string]string, quiet bool) *Downloader {
 	if targetOS == "" {
 		targetOS = runtime.GOOS
 	}
 	if targetArch == "" {
 		targetArch = runtime.GOARCH
 	}
+	if versions == nil {
+		versions = make(map[string]string)
+	}
 
-	// Configure HTTP client with proxy support
 	client := &http.Client{
 		Timeout: 30 * time.Minute,
 		Transport: &http.Transport{
 			Proxy: func(req *http.Request) (*url.URL, error) {
-				// Check for https_proxy environment variable
-				if proxyURL := os.Getenv("https_proxy"); proxyURL != "" {
-					return url.Parse(proxyURL)
-				}
-				if proxyURL := os.Getenv("HTTPS_PROXY"); proxyURL != "" {
-					return url.Parse(proxyURL)
-				}
-				// Also check http_proxy as fallback
-				if proxyURL := os.Getenv("http_proxy"); proxyURL != "" {
-					return url.Parse(proxyURL)
-				}
-				if proxyURL := os.Getenv("HTTP_PROXY"); proxyURL != "" {
-					return url.Parse(proxyURL)
+				for _, env := range []string{"https_proxy", "HTTPS_PROXY", "http_proxy", "HTTP_PROXY"} {
+					if proxyURL := os.Getenv(env); proxyURL != "" {
+						return url.Parse(proxyURL)
+					}
 				}
 				return nil, nil
 			},
@@ -77,74 +57,91 @@ func NewDownloader(targetOS, targetArch, targetVer, targetLSVer string, quiet bo
 	}
 
 	return &Downloader{
-		targetOS:    targetOS,
-		targetArch:  targetArch,
-		targetVer:   targetVer,
-		targetLSVer: targetLSVer,
-		quiet:       quiet,
-		httpClient:  client,
+		targetOS:   targetOS,
+		targetArch: targetArch,
+		versions:   versions,
+		quiet:      quiet,
+		httpClient: client,
 	}
 }
 
-// getLatestVersion fetches the latest version of a HashiCorp product from the checkpoint API
-func (d *Downloader) getLatestVersion(checkURL string) (string, error) {
-	resp, err := d.httpClient.Get(checkURL)
+// GetLatestVersion queries the checkpoint API and returns the latest version of toolName.
+func (d *Downloader) GetLatestVersion(toolName string) (string, error) {
+	tool, ok := KnownTools[toolName]
+	if !ok {
+		return "", fmt.Errorf("unknown tool: %s", toolName)
+	}
+
+	resp, err := d.httpClient.Get(tool.CheckURL())
 	if err != nil {
-		return "", fmt.Errorf("error fetching latest version: %w", err)
+		return "", fmt.Errorf("fetching latest version of %s: %w", toolName, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("error fetching latest version: status %d", resp.StatusCode)
+		return "", fmt.Errorf("fetching latest version of %s: HTTP %d", toolName, resp.StatusCode)
 	}
 
-	var check TerraformCheck
+	var check hashicorpCheckResponse
 	if err := json.NewDecoder(resp.Body).Decode(&check); err != nil {
-		return "", fmt.Errorf("error decoding version info: %w", err)
+		return "", fmt.Errorf("decoding version response for %s: %w", toolName, err)
 	}
 
 	if check.CurrentVersion == "" {
-		return "", fmt.Errorf("no version found in response")
+		return "", fmt.Errorf("empty version in response for %s", toolName)
 	}
 
 	return check.CurrentVersion, nil
 }
 
-// GetLatestVersion fetches the latest version of Terraform
-func (d *Downloader) GetLatestVersion() (string, error) {
-	return d.getLatestVersion(terraformCheckURL)
+// GetVersion returns the version to download for toolName:
+// the user-pinned version if set, otherwise the latest available.
+func (d *Downloader) GetVersion(toolName string) (string, error) {
+	if ver := d.versions[toolName]; ver != "" {
+		return strings.TrimPrefix(ver, "v"), nil
+	}
+	return d.GetLatestVersion(toolName)
 }
 
-// downloadFile downloads a product zip from releases.hashicorp.com
-func (d *Downloader) downloadFile(productName, ver, downloadURLFmt string) (string, error) {
+// Download downloads toolName at the configured (or latest) version.
+// Returns the path of the downloaded .zip file.
+func (d *Downloader) Download(toolName string) (string, error) {
+	tool, ok := KnownTools[toolName]
+	if !ok {
+		return "", fmt.Errorf("unknown tool: %s", toolName)
+	}
+
+	ver, err := d.GetVersion(toolName)
+	if err != nil {
+		return "", err
+	}
 	ver = strings.TrimPrefix(ver, "v")
 
-	downloadURL := fmt.Sprintf(downloadURLFmt, ver, ver, d.targetOS, d.targetArch)
-	zipFile := fmt.Sprintf("%s_%s_%s_%s.zip", productName, ver, d.targetOS, d.targetArch)
+	downloadURL := fmt.Sprintf(tool.DownloadURLFmt(), ver, ver, d.targetOS, d.targetArch)
+	zipFile := fmt.Sprintf("%s_%s_%s_%s.zip", toolName, ver, d.targetOS, d.targetArch)
 
-	fmt.Printf("Downloading %s %s for %s/%s...\n", productName, ver, d.targetOS, d.targetArch)
+	fmt.Printf("Downloading %s %s for %s/%s...\n", toolName, ver, d.targetOS, d.targetArch)
 	if !d.quiet {
 		fmt.Printf("URL: %s\n", downloadURL)
 	}
 
 	resp, err := d.httpClient.Get(downloadURL)
 	if err != nil {
-		return "", fmt.Errorf("error downloading: %w", err)
+		return "", fmt.Errorf("downloading %s: %w", toolName, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("error downloading: status %d", resp.StatusCode)
+		return "", fmt.Errorf("downloading %s: HTTP %d", toolName, resp.StatusCode)
 	}
 
 	out, err := os.Create(zipFile)
 	if err != nil {
-		return "", fmt.Errorf("error creating file: %w", err)
+		return "", fmt.Errorf("creating output file: %w", err)
 	}
 	defer out.Close()
 
 	totalSize := resp.ContentLength
-
 	if d.quiet || totalSize <= 0 {
 		_, err = io.Copy(out, resp.Body)
 	} else {
@@ -158,78 +155,49 @@ func (d *Downloader) downloadFile(productName, ver, downloadURLFmt string) (stri
 	}
 
 	if err != nil {
-		return "", fmt.Errorf("error writing file: %w", err)
+		return "", fmt.Errorf("writing download to disk: %w", err)
 	}
 
-	fmt.Printf("Downloaded to: %s\n", zipFile)
+	fmt.Printf("Downloaded: %s\n", zipFile)
 	return zipFile, nil
 }
 
-// Download downloads the specified version of Terraform
-func (d *Downloader) Download() (string, error) {
-	ver := d.targetVer
-	if ver == "" {
-		latest, err := d.GetLatestVersion()
-		if err != nil {
-			return "", err
-		}
-		ver = latest
-	}
-	return d.downloadFile("terraform", ver, terraformDownloadURL)
-}
-
-// DownloadLS downloads the specified version of terraform-ls
-func (d *Downloader) DownloadLS() (string, error) {
-	ver := d.targetLSVer
-	if ver == "" {
-		latest, err := d.getLatestVersion(terraformLSCheckURL)
-		if err != nil {
-			return "", err
-		}
-		ver = latest
-	}
-	return d.downloadFile("terraform-ls", ver, terraformLSDownloadURL)
-}
-
-// printProgress prints a progress bar
+// printProgress renders a progress bar to stdout.
 func (d *Downloader) printProgress(current, total int64) {
 	percent := float64(current) / float64(total) * 100
 	barWidth := 50
 	completed := int(float64(barWidth) * float64(current) / float64(total))
-	
+
 	bar := strings.Repeat("=", completed)
 	if completed < barWidth {
 		bar += ">"
 		bar += strings.Repeat(" ", barWidth-completed-1)
 	}
-	
-	// Format sizes
+
 	currentMB := float64(current) / 1024 / 1024
 	totalMB := float64(total) / 1024 / 1024
-	
+
 	fmt.Printf("\r[%s] %.1f%% (%.2f MB / %.2f MB)", bar, percent, currentMB, totalMB)
 }
 
-// Unzip extracts the terraform binary from the zip file
+// Unzip extracts the contents of zipPath into destPath.
 func Unzip(zipPath, destPath string) error {
 	r, err := zip.OpenReader(zipPath)
 	if err != nil {
-		return fmt.Errorf("error opening zip: %w", err)
+		return fmt.Errorf("opening zip: %w", err)
 	}
 	defer r.Close()
 
-	// Ensure destination directory exists
 	if err := os.MkdirAll(destPath, 0755); err != nil {
-		return fmt.Errorf("error creating destination directory: %w", err)
+		return fmt.Errorf("creating destination directory: %w", err)
 	}
 
 	for _, f := range r.File {
-		// Construct the full path for the file
 		fpath := filepath.Join(destPath, f.Name)
 
-		// Check for ZipSlip vulnerability
+		// Guard against ZipSlip path traversal.
 		if !strings.HasPrefix(fpath, filepath.Clean(destPath)+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal file path: %s", fpath)
+			return fmt.Errorf("illegal file path in zip: %s", fpath)
 		}
 
 		if f.FileInfo().IsDir() {
@@ -237,7 +205,6 @@ func Unzip(zipPath, destPath string) error {
 			continue
 		}
 
-		// Create the file
 		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
 			return err
 		}
@@ -265,23 +232,7 @@ func Unzip(zipPath, destPath string) error {
 	return nil
 }
 
-// GetVersion returns the target version (or latest if not specified)
-func (d *Downloader) GetVersion() (string, error) {
-	if d.targetVer != "" {
-		return strings.TrimPrefix(d.targetVer, "v"), nil
-	}
-	return d.GetLatestVersion()
-}
-
-// GetLSVersion returns the target terraform-ls version (or latest if not specified)
-func (d *Downloader) GetLSVersion() (string, error) {
-	if d.targetLSVer != "" {
-		return strings.TrimPrefix(d.targetLSVer, "v"), nil
-	}
-	return d.getLatestVersion(terraformLSCheckURL)
-}
-
-// ProgressReader wraps an io.Reader to track download progress
+// ProgressReader wraps an io.Reader and reports download progress.
 type ProgressReader struct {
 	Reader     io.Reader
 	Total      int64
@@ -289,14 +240,12 @@ type ProgressReader struct {
 	onProgress func(current, total int64)
 }
 
-// Read implements io.Reader interface with progress tracking
+// Read implements io.Reader.
 func (pr *ProgressReader) Read(p []byte) (int, error) {
 	n, err := pr.Reader.Read(p)
 	pr.Current += int64(n)
-	
 	if pr.onProgress != nil {
 		pr.onProgress(pr.Current, pr.Total)
 	}
-	
 	return n, err
 }
