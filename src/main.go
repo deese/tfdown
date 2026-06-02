@@ -28,7 +28,6 @@ func main() {
 		noLS          = flag.Bool("no-ls", false, "Skip terraform-ls")
 		withPacker    = flag.Bool("packer", false, "Also download Packer")
 		showVersion   = flag.Bool("version", false, "Print tfdown version")
-		selfUpdateFlag = flag.Bool("self-update", false, "Update tfdown itself to the latest release")
 		installFlag   = flag.Bool("install", false, "Install binaries after downloading")
 		installPath   = flag.String("install-path", "", "Directory to install binaries into")
 		quietMode     = flag.Bool("quiet", false, "Quiet mode (no progress bar)")
@@ -46,17 +45,6 @@ func main() {
 	}
 	if *showVersion {
 		fmt.Printf("tfdown version %s\n", version)
-		return
-	}
-
-	// Clean up any .old binary left by a previous self-update.
-	cleanupOldBinary()
-
-	if *selfUpdateFlag {
-		if err := selfUpdate(version, *quietMode); err != nil {
-			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
-		}
 		return
 	}
 
@@ -266,7 +254,6 @@ func printHelp() {
 	fmt.Println("  -f, --force           Force download even if already up to date")
 	fmt.Println("  -q, --quiet           Quiet mode (no progress bar)")
 	fmt.Println("  --version             Print tfdown version")
-	fmt.Println("  --self-update         Update tfdown itself to the latest release")
 	fmt.Println("  --help                Show this help")
 	fmt.Println()
 	fmt.Println("Examples:")
