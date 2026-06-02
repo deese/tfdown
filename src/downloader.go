@@ -67,12 +67,8 @@ func NewDownloader(targetOS, targetArch string, versions map[string]string, quie
 
 // GetLatestVersion queries the checkpoint API and returns the latest version of toolName.
 func (d *Downloader) GetLatestVersion(toolName string) (string, error) {
-	tool, ok := KnownTools[toolName]
-	if !ok {
-		return "", fmt.Errorf("unknown tool: %s", toolName)
-	}
-
-	resp, err := d.httpClient.Get(tool.CheckURL())
+	checkURL := fmt.Sprintf("https://checkpoint-api.hashicorp.com/v1/check/%s", toolName)
+	resp, err := d.httpClient.Get(checkURL)
 	if err != nil {
 		return "", fmt.Errorf("fetching latest version of %s: %w", toolName, err)
 	}
@@ -106,18 +102,16 @@ func (d *Downloader) GetVersion(toolName string) (string, error) {
 // Download downloads toolName at the configured (or latest) version.
 // Returns the path of the downloaded .zip file.
 func (d *Downloader) Download(toolName string) (string, error) {
-	tool, ok := KnownTools[toolName]
-	if !ok {
-		return "", fmt.Errorf("unknown tool: %s", toolName)
-	}
-
 	ver, err := d.GetVersion(toolName)
 	if err != nil {
 		return "", err
 	}
 	ver = strings.TrimPrefix(ver, "v")
 
-	downloadURL := fmt.Sprintf(tool.DownloadURLFmt(), ver, ver, d.targetOS, d.targetArch)
+	downloadURL := fmt.Sprintf(
+		"https://releases.hashicorp.com/%s/%s/%s_%s_%s_%s.zip",
+		toolName, ver, toolName, ver, d.targetOS, d.targetArch,
+	)
 	zipFile := fmt.Sprintf("%s_%s_%s_%s.zip", toolName, ver, d.targetOS, d.targetArch)
 
 	fmt.Printf("Downloading %s %s for %s/%s...\n", toolName, ver, d.targetOS, d.targetArch)

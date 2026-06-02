@@ -12,6 +12,7 @@ import (
 
 // Config holds the persistent configuration for tfdown.
 type Config struct {
+	Apps        []string          // tools to download; empty defaults to ["terraform"]
 	Versions    map[string]string // tool name -> last downloaded version
 	Install     bool
 	InstallPath string
@@ -26,6 +27,7 @@ func NewConfig() *Config {
 	}
 
 	return &Config{
+		Apps:       []string{},
 		Versions:   make(map[string]string),
 		configPath: filepath.Join(homeDir, ".tfdown.conf"),
 	}
@@ -60,6 +62,13 @@ func (c *Config) Load() error {
 		value := strings.TrimSpace(parts[1])
 
 		switch {
+		case key == "apps":
+			for _, app := range strings.Split(value, ",") {
+				app = strings.TrimSpace(app)
+				if app != "" {
+					c.Apps = append(c.Apps, app)
+				}
+			}
 		case strings.HasPrefix(key, "version."):
 			// New format: version.terraform=1.7.0
 			c.Versions[strings.TrimPrefix(key, "version.")] = value
@@ -85,6 +94,10 @@ func (c *Config) Save() error {
 	sb.WriteString("# tfdown configuration file\n")
 	fmt.Fprintf(&sb, "# Last updated: %s\n\n", time.Now().Format("2006-01-02"))
 
+	if len(c.Apps) > 0 {
+		fmt.Fprintf(&sb, "apps=%s\n", strings.Join(c.Apps, ","))
+	}
+
 	for toolName, ver := range c.Versions {
 		fmt.Fprintf(&sb, "version.%s=%s\n", toolName, ver)
 	}
@@ -93,6 +106,14 @@ func (c *Config) Save() error {
 	fmt.Fprintf(&sb, "install_path=%s\n", c.InstallPath)
 
 	return os.WriteFile(c.configPath, []byte(sb.String()), 0644)
+}
+
+// GetApps returns the configured apps, defaulting to ["terraform"] if none are set.
+func (c *Config) GetApps() []string {
+	if len(c.Apps) == 0 {
+		return []string{"terraform"}
+	}
+	return c.Apps
 }
 
 // SetVersion stores the downloaded version for a tool.

@@ -9,30 +9,18 @@ import (
 	"strings"
 )
 
-const version = "1.2.1"
-
-// toolRequest describes a tool to download in this run.
-type toolRequest struct {
-	name    string // must match a key in KnownTools
-	version string // user-pinned version; empty means latest
-	enabled bool
-}
+const version = "1.3.1"
 
 func main() {
 	var (
-		targetOS      = flag.String("os", "", "Target OS (linux, windows, darwin, openbsd, solaris)")
-		targetArch    = flag.String("arch", "", "Target architecture (amd64, 386, arm64, arm)")
-		targetVersion = flag.String("ver", "", "Terraform version (e.g. 1.7.0)")
-		targetLSVer   = flag.String("ls-ver", "", "terraform-ls version (e.g. 0.38.0)")
-		targetPackerV = flag.String("packer-ver", "", "Packer version (e.g. 1.15.3); implies --packer")
-		noLS          = flag.Bool("no-ls", false, "Skip terraform-ls")
-		withPacker    = flag.Bool("packer", false, "Also download Packer")
-		showVersion   = flag.Bool("version", false, "Print tfdown version")
-		installFlag   = flag.Bool("install", false, "Install binaries after downloading")
-		installPath   = flag.String("install-path", "", "Directory to install binaries into")
-		quietMode     = flag.Bool("quiet", false, "Quiet mode (no progress bar)")
-		forceFlag     = flag.Bool("force", false, "Force download even if already up to date")
-		showHelp      = flag.Bool("help", false, "Show help")
+		targetOS    = flag.String("os", "", "Target OS (linux, windows, darwin, openbsd, solaris)")
+		targetArch  = flag.String("arch", "", "Target architecture (amd64, 386, arm64, arm)")
+		showVersion = flag.Bool("version", false, "Print tfdown version")
+		installFlag = flag.Bool("install", false, "Install binaries after downloading")
+		installPath = flag.String("install-path", "", "Directory to install binaries into")
+		quietMode   = flag.Bool("quiet", false, "Quiet mode (no progress bar)")
+		forceFlag   = flag.Bool("force", false, "Force download even if already up to date")
+		showHelp    = flag.Bool("help", false, "Show help")
 	)
 
 	flag.BoolVar(quietMode, "q", false, "Quiet mode (shorthand)")
@@ -54,86 +42,61 @@ func main() {
 	}
 
 	autoUpdate := flag.NFlag() == 0
-	if autoUpdate && config.Install && config.InstallPath != "" {
-		*installFlag = true
-		*installPath = config.InstallPath
-	}
-	if *forceFlag && config.Install && config.InstallPath != "" {
+	if (autoUpdate || *forceFlag) && config.Install && config.InstallPath != "" {
 		*installFlag = true
 		*installPath = config.InstallPath
 	}
 
-	// To add a new tool: one flag above + one line here.
-	tools := []toolRequest{
-		{name: "terraform", version: *targetVersion, enabled: true},
-		{name: "terraform-ls", version: *targetLSVer, enabled: !*noLS},
-		{name: "packer", version: *targetPackerV, enabled: *withPacker || *targetPackerV != ""},
-	}
+	apps := config.GetApps()
 
-	// Build the version map for the downloader (pinned versions only).
-	pinnedVersions := make(map[string]string)
-	for _, t := range tools {
-		if t.version != "" {
-			pinnedVersions[t.name] = t.version
-		}
-	}
+	downloader := NewDownloader(*targetOS, *targetArch, nil, *quietMode)
 
-	downloader := NewDownloader(*targetOS, *targetArch, pinnedVersions, *quietMode)
-
-	// Resolve final versions for all enabled tools.
+	// Resolve final versions for all apps.
 	resolved := make(map[string]string)
-	for _, t := range tools {
-		if !t.enabled {
-			continue
-		}
-		ver, err := downloader.GetVersion(t.name)
+	for _, app := range apps {
+		ver, err := downloader.GetVersion(app)
 		if err != nil {
-			fmt.Printf("Error getting version for %s: %v\n", t.name, err)
+			fmt.Printf("Error getting version for %s: %v\n", app, err)
 			os.Exit(1)
 		}
-		resolved[t.name] = ver
+		resolved[app] = ver
 	}
 
 	// In auto-update mode, exit early if everything is current.
 	if autoUpdate && !*forceFlag && !*installFlag {
 		allCurrent := true
-		for _, t := range tools {
-			if t.enabled && config.GetVersion(t.name) != resolved[t.name] {
+		for _, app := range apps {
+			if config.GetVersion(app) != resolved[app] {
 				allCurrent = false
 				break
 			}
 		}
 		if allCurrent {
-			parts := make([]string, 0, len(tools))
-			for _, t := range tools {
-				if t.enabled {
-					parts = append(parts, fmt.Sprintf("%s %s", t.name, resolved[t.name]))
-				}
+			parts := make([]string, 0, len(apps))
+			for _, app := range apps {
+				parts = append(parts, fmt.Sprintf("%s %s", app, resolved[app]))
 			}
 			fmt.Printf("Already up to date (%s)\n", strings.Join(parts, ", "))
 			return
 		}
 	}
 
-	// Download tools that need updating.
-	downloaded := make(map[string]string) // tool name -> zip path
+	// Download apps that need updating.
+	downloaded := make(map[string]string) // app name -> zip path
 
-	for _, t := range tools {
-		if !t.enabled {
-			continue
-		}
-		needsDownload := !autoUpdate || config.GetVersion(t.name) != resolved[t.name] || *forceFlag
+	for _, app := range apps {
+		needsDownload := !autoUpdate || config.GetVersion(app) != resolved[app] || *forceFlag
 		if !needsDownload {
 			continue
 		}
 
-		zipFile, err := downloader.Download(t.name)
+		zipFile, err := downloader.Download(app)
 		if err != nil {
-			fmt.Printf("Error downloading %s: %v\n", t.name, err)
+			fmt.Printf("Error downloading %s: %v\n", app, err)
 			os.Exit(1)
 		}
-		downloaded[t.name] = zipFile
-		config.SetVersion(t.name, resolved[t.name])
+		downloaded[app] = zipFile
+		config.SetVersion(app, resolved[app])
 	}
 
 	// Persist updated versions and install settings.
@@ -147,21 +110,21 @@ func main() {
 
 	// Install or report.
 	if *installFlag && *installPath != "" {
-		for _, t := range tools {
-			zipFile, ok := downloaded[t.name]
+		for _, app := range apps {
+			zipFile, ok := downloaded[app]
 			if !ok {
 				continue
 			}
-			if err := installBinary(zipFile, t.name, *installPath); err != nil {
-				fmt.Printf("Error installing %s: %v\n", t.name, err)
+			if err := installBinary(zipFile, app, *installPath); err != nil {
+				fmt.Printf("Error installing %s: %v\n", app, err)
 				os.Exit(1)
 			}
-			fmt.Printf("Installed %s %s to %s\n", t.name, resolved[t.name], *installPath)
+			fmt.Printf("Installed %s %s to %s\n", app, resolved[app], *installPath)
 		}
 	} else {
-		for _, t := range tools {
-			if _, ok := downloaded[t.name]; ok {
-				fmt.Printf("Download complete: %s %s\n", t.name, resolved[t.name])
+		for _, app := range apps {
+			if _, ok := downloaded[app]; ok {
+				fmt.Printf("Download complete: %s %s\n", app, resolved[app])
 			}
 		}
 		if len(downloaded) > 0 {
@@ -232,11 +195,6 @@ func printHelp() {
 	fmt.Println("                        Default: current OS")
 	fmt.Println("  --arch string         Target architecture (amd64, 386, arm64, arm)")
 	fmt.Println("                        Default: current architecture")
-	fmt.Println("  --ver string          Terraform version (e.g. 1.7.0)")
-	fmt.Println("  --ls-ver string       terraform-ls version (e.g. 0.38.0)")
-	fmt.Println("  --packer-ver string   Packer version (e.g. 1.15.3); implies --packer")
-	fmt.Println("  --no-ls               Skip terraform-ls")
-	fmt.Println("  --packer              Also download Packer")
 	fmt.Println("  --install             Install binaries after downloading")
 	fmt.Println("  --install-path string Directory to install binaries into")
 	fmt.Println("  -f, --force           Force download even if already up to date")
@@ -244,24 +202,24 @@ func printHelp() {
 	fmt.Println("  --version             Print tfdown version")
 	fmt.Println("  --help                Show this help")
 	fmt.Println()
+	fmt.Println("Apps are configured via the 'apps' key in ~/.tfdown.conf.")
+	fmt.Println("If the key is absent, only terraform is downloaded.")
+	fmt.Println()
+	fmt.Println("Config file (~/.tfdown.conf):")
+	fmt.Println("  apps=terraform,terraform-ls,packer")
+	fmt.Println("  install=true")
+	fmt.Println("  install_path=/usr/local/bin")
+	fmt.Println()
 	fmt.Println("Examples:")
-	fmt.Println("  # Download latest versions for the current platform")
+	fmt.Println("  # Download latest versions (apps from config, default: terraform)")
 	fmt.Println("  tfdown")
 	fmt.Println()
 	fmt.Println("  # Download and install to /usr/local/bin")
 	fmt.Println("  tfdown --install --install-path /usr/local/bin")
 	fmt.Println()
-	fmt.Println("  # Terraform only (skip terraform-ls)")
-	fmt.Println("  tfdown --no-ls")
-	fmt.Println()
-	fmt.Println("  # Terraform + Packer")
-	fmt.Println("  tfdown --packer")
-	fmt.Println()
 	fmt.Println("  # Force re-download and install")
 	fmt.Println("  tfdown -f")
 	fmt.Println()
-	fmt.Println("  # Specific versions for Linux ARM64")
-	fmt.Println("  tfdown --ver 1.7.0 --ls-ver 0.38.0 --os linux --arch arm64")
-	fmt.Println()
-	fmt.Println("Config file: ~/.tfdown.conf")
+	fmt.Println("  # Download for Linux ARM64")
+	fmt.Println("  tfdown --os linux --arch arm64")
 }
