@@ -200,18 +200,6 @@ func installBinary(zipFile, toolName, installPath string) error {
 	dstPath := filepath.Join(installPath, binaryName)
 	fmt.Printf("Installing to %s...\n", dstPath)
 
-	// If the destination already exists, rename it first.
-	// On Windows this is required when the file is in use (e.g. tfdown updating itself);
-	// the running process keeps executing from the renamed copy until it exits.
-	if _, err := os.Stat(dstPath); err == nil {
-		oldPath := dstPath + ".old"
-		os.Remove(oldPath)
-		if err := os.Rename(dstPath, oldPath); err != nil {
-			return fmt.Errorf("renaming existing binary: %w", err)
-		}
-		defer os.Remove(oldPath)
-	}
-
 	if err := copyFile(srcPath, dstPath); err != nil {
 		return fmt.Errorf("copying binary: %w", err)
 	}
